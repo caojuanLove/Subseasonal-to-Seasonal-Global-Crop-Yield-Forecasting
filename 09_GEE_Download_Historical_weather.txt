@@ -1,0 +1,642 @@
+var winterWheat1 = ee.Image("users/caojuan802311/worldForecast/Wheat/Winter_Wheat_map"), // Winter wheat distribution map
+    shp = ee.FeatureCollection("users/caojuan802311/worldForecast/Wheat/Indiagee_up_load_winter"), // India winter wheat growing area shapefile
+    WinterWheat = ee.Image("users/caojuan802311/worldForecast/Wheat/India_1km_final"); // India 1km winter wheat distribution map (final version)
+
+
+
+// Soil property images from HWSD V2, DEM from SRTM
+var AWC = ee.Image("users/caojuan802311/Soil_HWSD_V2/AWC"), // Available Water Capacity
+    CEC_SOIL = ee.Image("users/caojuan802311/Soil_HWSD_V2/CEC_SOIL"), // Cation Exchange Capacity
+    CLAY = ee.Image("users/caojuan802311/Soil_HWSD_V2/CLAY"), // Clay content
+    ORG_CARBON = ee.Image("users/caojuan802311/Soil_HWSD_V2/ORG_CARBON"), // Organic Carbon content
+    PH_WATER = ee.Image("users/caojuan802311/Soil_HWSD_V2/PH_WATER"), // pH in water
+    SAND = ee.Image("users/caojuan802311/Soil_HWSD_V2/SAND"), // Sand content
+    SILT = ee.Image("users/caojuan802311/Soil_HWSD_V2/SILT"), // Silt content
+    TOTAL_N = ee.Image("users/caojuan802311/Soil_HWSD_V2/TOTAL_N"), // Total Nitrogen content
+    MCD15A3H = ee.ImageCollection("MODIS/061/MCD15A3H"), // MODIS 4-day LAI product (2002-present)
+    MOD15A2H = ee.ImageCollection("MODIS/061/MOD15A2H"); // MODIS 8-day LAI product (2001-2002)
+    
+var DEM = ee.Image("CGIAR/SRTM90_V4"); // SRTM 90m Digital Elevation Model
+
+// 20240508 Dataset Update: Convert MCD15A3H 4-day data to daily MCD43A4 format for consistency with meteorological data
+// Target output: Daily data for the entire year
+// Update: Soil properties calculated as area-weighted mean instead of simple topsoil extraction
+//
+
+// Apply MCD43A4 QA bands for cloud masking
+function applyQualityMask(image) {
+  // Select mandatory quality bands for Band 1 (Red), Band 2 (NIR), and Band 3 (Blue)
+  var qaBand1 = image.select('BRDF_Albedo_Band_Mandatory_Quality_Band1');
+  var qaBand2 = image.select('BRDF_Albedo_Band_Mandatory_Quality_Band2');
+  var qaBand3 = image.select('BRDF_Albedo_Band_Mandatory_Quality_Band3');
+  
+  // Create masks for high-quality data (bit 0 = 0 indicates good quality)
+  var maskBand1 = qaBand1.bitwiseAnd(1).eq(0);
+  var maskBand2 = qaBand2.bitwiseAnd(1).eq(0);
+  var maskBand3 = qaBand3.bitwiseAnd(1).eq(0);
+  
+  // Combine masks for all three bands
+  var combinedMask = maskBand1.and(maskBand2).and(maskBand3);
+  
+  // Apply mask and return the image
+  return image.updateMask(combinedMask)
+}
+
+
+var DEM = ee.Image("CGIAR/SRTM90_V4"); // Re-declare DEM (redundant but preserved as original)
+// var shp = ee.FeatureCollection("users/caojuan802311/worldForecast/China_class_step2"); // Alternative shapefile (commented out)
+var MCD43A4 = ee.ImageCollection("MODIS/061/MCD43A4")//.map(applyQualityMask); // MODIS BRDF Albedo product (cloud masking optional)
+
+
+
+
+
+
+//*********************LAI Processing (commented out, reserved for future use)************************************************************************************88
+//var properties = bandNames.getInfo();
+// Future improvement: Interpolate to daily resolution and validate LAI accuracy
+
+
+/*
+
+// Add date property to LAI images for later extraction
+function addDatePropertyLAI(image) {
+  var index = image.getString('system:index');
+  var year = ee.Number.parse(index.slice(2, 6));
+  var month = ee.Number.parse(index.slice(7, 9));
+  var day = ee.Number.parse(index.slice(10, 12));
+  var date = ee.Date.fromYMD(year, month, day);
+  return image.set('system:time_start', date.millis());
+}
+
+
+
+var MCD15A3H2022 = MCD15A3H.filter(ee.Filter.date('2002-07-04', '2023-01-01')).select(['Lai'],['LAI']); // LAI 2002-present
+var MOD15A2H2022 = MOD15A2H.filter(ee.Filter.date('2001-01-01', '2002-07-4')).select(['Lai_500m'],['LAI']); // LAI 2001-2002
+var LAIcollection = MOD15A2H2022.merge(MCD15A3H2022).map(function(image) {
+    return image.multiply(0.1); // Convert scale factor (raw value * 0.1 = actual LAI)
+}).map(addDatePropertyLAI);
+
+*/
+
+
+//*********************Region Selection************************************************************************************88
+
+
+
+
+
+var scale = 500;  // Target spatial resolution: 500 meters
+var spammean = WinterWheat.reproject({
+    crs: winterWheat1.projection().crs(), // Reproject to match winterWheat1's CRS
+    scale: scale
+  }).rename(['area']) // Rename band to 'area' (represents winter wheat planting area)
+
+
+var spam_projection = spammean.projection(); // Get projection of the reprojected planting area map
+
+
+
+Map.addLayer(spammean, {min: 0, max: 1000, palette: ['blue', 'green', 'red']}, 'Monthly Mean EVI'); // Visualize planting area (legend label preserved as original)
+
+
+//*********************Region Selection (mask soil/DEM with planting area)************************************************************************************88
+
+var AWC = AWC.updateMask(spammean).select(['b1'],['AWC']); // Mask AWC with planting area, rename band
+var CEC_SOIL = CEC_SOIL.updateMask(spammean).select(['b1'],['CEC_SOIL']);
+var CLAY = CLAY.updateMask(spammean).select(['b1'],['CLAY']);
+var ORG_CARBON = ORG_CARBON.updateMask(spammean).select(['b1'],['ORG_CARBON']);
+var PH_WATER = PH_WATER.updateMask(spammean).select(['b1'],['PH_WATER']);
+var SAND = SAND.updateMask(spammean).select(['b1'],['SAND']);
+var SILT = SILT.updateMask(spammean).select(['b1'],['SILT']);
+var TOTAL_N = TOTAL_N.updateMask(spammean).select(['b1'],['TOTAL_N']);
+var DEM = DEM.updateMask(spammean)//.select(['b1'],['elevation']); // Mask DEM with planting area (band rename optional)
+// Assume TOTAL_N is an Image object
+
+
+// Select specific fields from the shapefile
+var selectedFields = ['idJoin','idGroup','iso3','region'];
+shp = shp.select(selectedFields);              
+
+Map.addLayer(shp, {color: 'blue'}, 'Filtered Shapefile'); // Visualize filtered shapefile
+
+
+//************************************Meteorological Parameter Calculation Functions (RH, Wind Speed, VPD)*****************************************
+var calculateRH = function(image) {
+  // Convert temperature from Kelvin to Celsius
+  var T = image.select('Tmean').subtract(273.15);
+  var Td = image.select('dewpoint_temperature_2m').subtract(273.15);
+  
+  // Calculate relative humidity using Tetens' formula
+  var RH = Td.multiply(17.625).divide(Td.add(243.04))
+              .exp()
+              .divide(
+                T.multiply(17.625).divide(T.add(243.04)).exp()
+              )
+              .multiply(100);
+  
+  // Add RH as a new band
+  return image.addBands(RH.rename('relative_humidity'));
+};
+
+// Function to calculate wind speed from u/v components
+var calculateWindSpeed = function(image) {
+  // Get 10m u (zonal) and v (meridional) wind components
+  var u = image.select('u_component_of_wind_10m');
+  var v = image.select('v_component_of_wind_10m');
+  
+  // Calculate wind speed (magnitude of wind vector)
+  var windSpeed = u.pow(2).add(v.pow(2)).sqrt();
+  
+  // Add wind speed as a new band
+  return image.addBands(windSpeed.rename('wind_speed'));
+};
+
+// Unit conversion function (Kelvin → Celsius, radiation → W/m², precipitation → mm)
+var UnitConverter = function(image) {
+  // Convert temperature bands from Kelvin to Celsius
+  var temp2m = image.select('Tmean').subtract(273.15);
+  var temp2mMin = image.select('Tmin').subtract(273.15);
+  var temp2mMax = image.select('Tmax').subtract(273.15);
+  var solarWm2 = image.select('Solar').divide(86400); // Convert daily solar radiation from J/m² to W/m² (86400 seconds/day)
+  var Pre = image.select('Pre').multiply(1000); // Convert precipitation from meters to millimeters
+  // Add converted bands with new names
+  return image
+    .addBands(temp2m.rename('Tmean1'))
+    .addBands(temp2mMin.rename('Tmin1'))
+    .addBands(temp2mMax.rename('Tmax1'))
+    .addBands(solarWm2.rename('Solar1'))
+    .addBands(Pre.rename('Pre1'));
+};
+
+
+
+// Calculate Vapor Pressure Deficit (VPD)
+var calculateVPD = function(image) {
+  // Convert relative humidity from percentage to decimal
+  var hur = image.select('relative_humidity').divide(100);
+  // Get temperature band (Celsius)
+  var T = image.select('Tmean1');
+  // Calculate saturation vapor pressure (e_s) using Tetens' formula
+  var e_s = ee.Image(6.107).multiply(
+    ee.Image(10).pow(
+      ee.Image(7.5).multiply(T).divide(ee.Image(237.3).add(T))
+    )
+  );
+
+  // Calculate VPD (e_s - e_a, where e_a = e_s * RH)
+  var VPD = e_s.subtract(e_s.multiply(hur));
+
+  // Add VPD as a new band
+  return image.addBands(VPD.rename('VPD'));
+};
+//*************************************************************************************************************
+
+
+
+
+//*****************************Vegetation Index Calculation Functions (WDRVI, NDVI, EVI, KNDVI)****************************************************************
+function calculateWDRVI(image) {
+  var weightFactor = 0.1; // WDRVI weight factor (0.1 recommended for vegetation)
+  var nir = image.select('Nadir_Reflectance_Band2'); // NIR band (Band 2 of MCD43A4)
+  var red = image.select('Nadir_Reflectance_Band1'); // Red band (Band 1 of MCD43A4)
+
+  // WDRVI formula: (weight*NIR - Red) / (weight*NIR + Red)
+  var wdrvi = nir.multiply(weightFactor).subtract(red)
+  .divide(nir.multiply(weightFactor).add(red))
+  .rename('WDRVI');
+        
+  return wdrvi.rename('WDRVI');
+}
+
+
+function calculateNDVI(image) {
+  var weightFactor = 1; // NDVI is a special case of WDRVI with weight = 1
+  var nir = image.select('Nadir_Reflectance_Band2'); // NIR band
+  var red = image.select('Nadir_Reflectance_Band1'); // Red band
+
+  // NDVI formula: (NIR - Red) / (NIR + Red)
+  var ndvi = nir.multiply(weightFactor).subtract(red)
+  .divide(nir.multiply(weightFactor).add(red))
+  .rename('NDVI');
+  return ndvi;
+}
+
+function calculateEVI(image) {
+  // EVI formula: 2.5 * ((NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1))
+  var EVI = image.expression(
+    '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
+      'NIR': image.select('Nadir_Reflectance_Band2'),
+      'RED': image.select('Nadir_Reflectance_Band1'),
+      'BLUE': image.select('Nadir_Reflectance_Band3') // Blue band (Band 3 of MCD43A4)
+    }).rename('EVI');
+  return EVI;
+}
+
+
+function calculateKNDVI(image) { // Note: Original code has redundant function name (preserved as is)
+  var nir = image.select('Nadir_Reflectance_Band2'); // Adjust to correct band name if needed
+  var red = image.select('Nadir_Reflectance_Band1'); // Adjust to correct band name if needed
+  // Compute squared difference (D²)
+  var D2 = nir.subtract(red).pow(2)
+  .select([0],['d2']);
+  // Gamma parameter (1/σ²), set to 4e6 * (-2.0)
+  var gamma = ee.Number(4e6).multiply(-2.0);
+  // Compute kernel function (k) and KNDVI
+  var k = D2.divide(gamma).exp();
+  var KNDVI = ee.Image.constant(1)
+  .subtract(k).divide(
+  ee.Image.constant(1).add(k))
+  .select([0],['KNDVI']);
+  return KNDVI;
+}
+
+
+
+
+//***************************************************************************************************************
+
+
+//*********************Function to Add Date Property to Images (for time-series processing)******************************************************
+
+
+
+function addDateProperty(image) {
+  var index = image.getString('system:index');
+  var year = ee.Number.parse(index.slice(0, 4)); // Extract year from image index (format: YYYYMMDD)
+  var month = ee.Number.parse(index.slice(5, 7)); // Extract month
+  var day = ee.Number.parse(index.slice(8, 10)); // Extract day
+  var date = ee.Date.fromYMD(year, month, day);
+  return image.set('system:time_start', date.millis()); // Set time property in milliseconds
+}
+
+
+
+
+//*************************************************************************************************************
+
+
+//*********************Data Loading****************************************************************************
+var start1 = ee.Date('2000-01-01'); // Start date for data collection
+var end2 = ee.Date('2023-01-01'); // End date for data collection
+
+// Calculate vegetation indices and add date properties
+var WDRVI = MCD43A4.filter(ee.Filter.date(start1, end2)).map(calculateWDRVI).map(addDateProperty);
+var EVI = MCD43A4.filter(ee.Filter.date(start1, end2)).map(calculateEVI).map(addDateProperty);
+var KNDVI = MCD43A4.filter(ee.Filter.date(start1, end2)).map(calculateKNDVI).map(addDateProperty);
+var NDVI = MCD43A4.filter(ee.Filter.date(start1, end2)).map(calculateNDVI).map(addDateProperty);
+
+
+// Load ERA5-LAND daily aggregated meteorological data
+var climate_dataset = ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")
+                .filter(ee.Filter.date(start1, end2))
+                .select([
+                  'temperature_2m', // 2m temperature (Kelvin)
+                  'temperature_2m_min', // Minimum 2m temperature (Kelvin)
+                  'temperature_2m_max', // Maximum 2m temperature (Kelvin)
+                  'total_precipitation_sum', // Total precipitation (meters)
+                  'surface_net_solar_radiation_sum', // Surface net solar radiation (J/m²)
+                  'u_component_of_wind_10m', // 10m zonal wind (m/s)
+                  'v_component_of_wind_10m', // 10m meridional wind (m/s)
+                  'dewpoint_temperature_2m' // 2m dewpoint temperature (Kelvin)
+                ],['Tmean', // Rename bands for consistency
+                    'Tmin',
+                    'Tmax',
+                    'Pre',
+                    'Solar',
+                    'u_component_of_wind_10m',
+                    'v_component_of_wind_10m',
+                     'dewpoint_temperature_2m']);
+                     
+
+
+// Process meteorological data: calculate RH → wind speed → unit conversion → VPD
+var datasetWithRH = climate_dataset.map(calculateRH);
+var datasetWithWindSpeed = datasetWithRH.map(calculateWindSpeed);
+var datasetWithCelsiusTemps = datasetWithWindSpeed.map(UnitConverter);
+var climate_dataset = datasetWithCelsiusTemps.map(calculateVPD).select(['Tmean1','Tmin1','Tmax1','Pre1','Solar1','wind_speed','VPD']);
+//*********************Data Loading****************************************************************************
+
+
+//*********************Area-Weighted Mean Calculation Function**************************************************************************
+var multiplyByHarvestArea = function(bandName, combined) {
+  var band = combined.select([bandName]);
+  return band.multiply(spammean).rename([bandName]); // Multiply band values by planting area (for weighted mean)
+};
+
+// Keep original spatial resolution
+//*************************************************************************************************************
+
+
+//*********************Monthly Statistic Functions (commented out, reserved for future use)**************************************************************************
+/*
+function calculateMonthlyMean(imageCollection, start, end) {
+  var startDate = ee.Date(start);
+  var endDate = ee.Date(end);
+
+  // Generate list of monthly start dates
+  var months = ee.List.sequence(0, endDate.difference(startDate, 'month').subtract(1)).map(function(month) {
+    return startDate.advance(month, 'month');
+  });
+
+  // Calculate monthly mean for each month
+  var monthlyMeans = months.map(function(date) {
+    var start = ee.Date(date);
+    var end = start.advance(1, 'month');
+
+    // Filter images for the current month
+    var monthlyImages = imageCollection.filterDate(start, end);
+
+    // Compute monthly mean and set time property
+    var monthlyMean = monthlyImages.mean().set('system:time_start', start.millis());
+
+    return monthlyMean;
+  });
+
+  return ee.ImageCollection.fromImages(monthlyMeans);
+}
+
+
+
+
+function calculateMonthlySum(imageCollection, start, end) {
+  var startDate = ee.Date(start);
+  var endDate = ee.Date(end);
+
+  // Generate list of monthly start dates
+  var months = ee.List.sequence(0, endDate.difference(startDate, 'month').subtract(1)).map(function(month) {
+    return startDate.advance(month, 'month');
+  });
+
+  // Calculate monthly sum for each month
+  var monthlyMeans = months.map(function(date) {
+    var start = ee.Date(date);
+    var end = start.advance(1, 'month');
+
+    // Filter images for the current month
+    var monthlyImages = imageCollection.filterDate(start, end);
+
+    // Compute monthly sum and set time property
+    var monthlyMean = monthlyImages.sum().set('system:time_start', start.millis());
+
+    return monthlyMean;
+  });
+
+  return ee.ImageCollection.fromImages(monthlyMeans);
+}
+
+
+function calculateMonthlyMax(imageCollection, start, end) {
+  var startDate = ee.Date(start);
+  var endDate = ee.Date(end);
+
+  // Generate list of monthly start dates
+  var months = ee.List.sequence(0, endDate.difference(startDate, 'month').subtract(1)).map(function(month) {
+    return startDate.advance(month, 'month');
+  });
+
+  // Calculate monthly maximum for each month
+  var monthlyMeans = months.map(function(date) {
+    var start = ee.Date(date);
+    var end = start.advance(1, 'month');
+
+    // Filter images for the current month
+    var monthlyImages = imageCollection.filterDate(start, end);
+
+    // Compute monthly maximum and set time property
+    var monthlyMean = monthlyImages.max().set('system:time_start', start.millis());
+
+    return monthlyMean;
+  });
+
+  return ee.ImageCollection.fromImages(monthlyMeans);
+}
+//*********************Monthly Statistic Functions (commented out)**************************************************************************
+
+*/
+
+
+
+// Function to process and export yearly data (vegetation indices + meteorology + soil/DEM)
+var processAndExportYearly = function(year,shp,region_name) {
+    var yearStr = ee.Number(year).format();
+    var endDate = ee.Date((year) + harvestr); // Harvest date (from global variable)
+    var startDate = ee.Date((year) + plantregion); // Planting date (from global variable, exclusive of end date like Python)
+    var endDate = endDate.advance(1, 'day'); // Extend end date by 1 day to include harvest date + 90 days before planting
+    var date0 = ee.Date(year+'-01-01'); // Reference date for time property
+    
+    // Process meteorological data: reproject, mask, rename bands
+    var Climate_dataset = climate_dataset.filterDate(startDate, endDate).map(function(image) {
+    var image1 = image.reproject({crs: spam_projection}); // Reproject to match planting area map
+    var maskedImage = image1.select(['Tmean1','Tmin1','Tmax1','Pre1','Solar1','wind_speed','VPD'],
+                          ['Tmean','Tmin','Tmax','Pre','Solar','wind_speed','VPD']); // Rename bands
+    var image2 = maskedImage.updateMask(spammean); // Mask with planting area
+    return image2;
+  });
+  
+   //var filteredClimate_dataset_other = calculateMonthlyMean(filteredClimate_dataset_other, startDate, endDate) 
+ //  print(filteredClimate_dataset_other)
+ // calculateMonthlyMean(filteredClimate_dataset, start, end) 
+  
+  // Convert meteorological image collection to a single image (bands: bandname_YYYYMMDD)
+  var filteredClimate_dataset = ee.Image(Climate_dataset.toBands()).set('system:time_start', ee.Number(date0));
+
+  //print('filteredClimate_dataset spatial resolution:', filteredClimate_dataset.projection().nominalScale());
+  // Process NDVI data: reproject, mask, convert to single image
+  var filteredNDVI_dataset= NDVI.filterDate(startDate, endDate).map(function(image) {
+    var image1 = image.reproject({crs: spam_projection});
+    var image2 = image1.updateMask(spammean);
+    return image2;
+  });
+
+  var filteredNDVI_dataset = ee.Image(filteredNDVI_dataset.toBands()).set('system:time_start', ee.Number(date0));
+
+
+
+  // Process EVI data
+  var filteredEVI_dataset= EVI.filterDate(startDate, endDate).map(function(image) {
+    var image1 = image.reproject({crs: spam_projection});
+    var image2 = image1.updateMask(spammean);
+    return image2;
+  });
+
+  var filteredEVI_dataset = ee.Image(filteredEVI_dataset.toBands()).set('system:time_start', ee.Number(date0));
+
+
+
+  // Process WDRVI data
+  var filteredWDRVI_dataset= WDRVI.filterDate(startDate, endDate).map(function(image) {
+    var image1 = image.reproject({crs: spam_projection});
+    var image2 = image1.updateMask(spammean);
+    return image2;
+  });
+
+  var filteredWDRVI_dataset = ee.Image(filteredWDRVI_dataset.toBands()).set('system:time_start', ee.Number(date0));
+
+
+
+
+
+
+  // Process KNDVI data
+  var filteredKNDVI_dataset= KNDVI.filterDate(startDate, endDate).map(function(image) {
+    var image1 = image.reproject({crs: spam_projection});
+    var image2 = image1.updateMask(spammean);
+    return image2;
+  });
+
+  var filteredKNDVI_dataset = ee.Image(filteredKNDVI_dataset.toBands()).set('system:time_start', ee.Number(date0));
+
+  //print('filteredKNDVI_dataset spatial resolution:', filteredKNDVI_dataset.projection().nominalScale());
+
+  // Combine all datasets (vegetation indices + meteorology)
+  var combined = filteredKNDVI_dataset.addBands(filteredWDRVI_dataset).addBands(filteredEVI_dataset).addBands(filteredNDVI_dataset).addBands(filteredClimate_dataset);
+  var bandNames = combined.bandNames(); // Get all band names
+
+  // Calculate area-weighted bands (multiply each band by planting area)
+  var multipliedBandsList = bandNames.map(function(bandName) {
+    return multiplyByHarvestArea(bandName, combined);
+  });
+
+
+
+
+  // Convert list of weighted bands to image collection, then to single image
+  var multipliedBandsCollection = ee.ImageCollection(multipliedBandsList.map(function(image) {
+    return ee.Image(image);
+  }));
+
+  // Add soil properties and DEM to the weighted bands image
+  var multipliedBandsImage = multipliedBandsCollection.toBands().rename(bandNames).addBands(spammean).addBands(TOTAL_N).addBands(SILT).addBands(SAND).addBands(PH_WATER).addBands(ORG_CARBON).addBands(CLAY).addBands(CEC_SOIL).addBands(AWC).addBands(DEM);//
+
+
+//print(multipliedBandsImage)
+
+  // Calculate mean values within each shapefile feature (area-weighted by planting area)
+  var feature_sum = multipliedBandsImage.reduceRegions({
+    collection: shp,
+    reducer: ee.Reducer.mean(),
+    scale: spammean.projection().nominalScale(), // Use planting area map's resolution
+    crs: "EPSG:4326", // WGS84 coordinate system
+    tileScale: 16 // Increase tile scale for large regions
+  });
+//
+
+
+  // Add centroid latitude/longitude to each feature
+  var cleaned_feature_sum = feature_sum.map(function(feature) {
+    var centroid = feature.geometry().centroid();
+    var lon = centroid.coordinates().get(0); // Note: EE coordinates are [lon, lat]
+    var lat = centroid.coordinates().get(1);
+    return ee.Feature(null, feature.toDictionary()).set({'lat': lat, 'lon': lon});
+  });
+
+// Filter out features with zero planting area
+var cleaned_feature_sum = cleaned_feature_sum.filter(ee.Filter.gt('area', 0));
+
+  // Export results to Google Drive
+  Export.table.toDrive({
+    collection: cleaned_feature_sum,
+    description: 'WinterWheat_'+region_name+'_' + year,
+    fileNamePrefix: 'WinterWheat_'+region_name+'_' + year,
+    folder: "WinterwheatInida_daily" // Target folder in Google Drive
+  });
+}
+
+//////////////////////////////////////////////////////////////////////// Historical Meteorological Data Processing (vegetation indices excluded)////////////////////////////////////////////////////////////////////////
+
+var processAndExporthistYearly = function(year,shp,region_name) {
+    var yearStr = ee.Number(year).format();
+    var endDate = ee.Date((year) + harvestr); // Harvest date
+    var startDate = ee.Date((year) + plantregion); // Planting date (exclusive of end date)
+    var endDate = endDate.advance(1, 'day'); // Extend to include harvest date + 90 days before planting
+    var date0 = ee.Date(year+'-01-01'); // Reference date
+    
+    // Process meteorological data: reproject, mask, rename bands
+    var Climate_dataset = climate_dataset.filterDate(startDate, endDate).map(function(image) {
+    var image1 = image.reproject({crs: spam_projection});
+    var maskedImage = image1.select(['Tmean1','Tmin1','Tmax1','Pre1','Solar1','wind_speed','VPD'],
+                          ['Tmean','Tmin','Tmax','Pre','Solar','wind_speed','VPD']);
+    var image2 = maskedImage.updateMask(spammean);
+    return image2;
+  });
+  
+   //var filteredClimate_dataset_other = calculateMonthlyMean(filteredClimate_dataset_other, startDate, endDate) 
+ //  print(filteredClimate_dataset_other)
+ // calculateMonthlyMean(filteredClimate_dataset, start, end) 
+  
+  // Convert meteorological collection to single image
+  var filteredClimate_dataset = ee.Image(Climate_dataset.toBands()).set('system:time_start', ee.Number(date0));
+
+
+
+  // Combine meteorological bands
+  var combined = filteredClimate_dataset;
+  var bandNames = combined.bandNames(); 
+
+  // Calculate area-weighted meteorological bands
+  var multipliedBandsList = bandNames.map(function(bandName) {
+    return multiplyByHarvestArea(bandName, combined);
+  });
+
+
+
+
+  // Convert to image collection then single image
+  var multipliedBandsCollection = ee.ImageCollection(multipliedBandsList.map(function(image) {
+    return ee.Image(image);
+  }));
+
+  // Add planting area map to the weighted bands
+  var multipliedBandsImage = multipliedBandsCollection.toBands().rename(bandNames).addBands(spammean);//
+
+
+//print(multipliedBandsImage)
+
+  // Calculate mean values within each shapefile feature
+  var feature_sum = multipliedBandsImage.reduceRegions({
+    collection: shp,
+    reducer: ee.Reducer.mean(),
+    scale: spammean.projection().nominalScale(),
+    crs: "EPSG:4326",
+    tileScale: 16
+  });
+
+
+  // Add centroid latitude/longitude
+  var cleaned_feature_sum = feature_sum.map(function(feature) {
+    var centroid = feature.geometry().centroid();
+    var lon = centroid.coordinates().get(0);
+    var lat = centroid.coordinates().get(1);
+    return ee.Feature(null, feature.toDictionary()).set({'lat': lat, 'lon': lon});
+  });
+
+
+var country = 'India'; // Target country
+var crop = 'Wheat'; // Target crop
+
+// Filter out features with zero planting area
+var cleaned_feature_sum = cleaned_feature_sum.filter(ee.Filter.gt('area', 0));
+
+  // Export historical meteorological data to Google Drive
+  Export.table.toDrive({
+    collection: cleaned_feature_sum,
+    description: crop+'_'+region_name+'_' + year,
+    fileNamePrefix: crop+'_'+region_name+'_' + year,
+    folder: crop+"_histdailyclimate"+'_'+country // Target folder
+  });
+}
+
+// Define time range for historical data
+var startYear_hist = 1971;
+var endYear_hist = 2020;
+
+// Define planting and harvest date templates (month-day)
+var plantregion = '-01-01'; // Planting date (January 1st)
+var harvestr = '-12-31'; // Harvest date (December 31st)
+var region_name = 'I'; // Region identifier
+
+// Process and export data for each year in the historical range
+ee.List.sequence(startYear_hist, endYear_hist).getInfo().forEach(function(year) {
+  processAndExporthistYearly(year, shp, region_name);
+});
